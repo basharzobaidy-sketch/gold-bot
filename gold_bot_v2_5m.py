@@ -51,7 +51,7 @@ def run_server():
     app.run(host='0.0.0.0', port=10000)
 
 # تشغيل السيرفر بالخلفية
-threading.Thread(target=run_server).start()
+threading.Thread(target=run_server, daemon=True).start()
 
 # ================== تشغيل البوت ==================
 def main():
