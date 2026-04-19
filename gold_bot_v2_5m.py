@@ -132,7 +132,7 @@ def send_telegram(text: str) -> None:
 # =========================================================
 # TELEGRAM + WEB
 # =========================================================
-app = Flask(_name_)
+app = Flask(__name__)
 
 @app.route("/")
 def home():
@@ -813,7 +813,7 @@ def bot_loop() -> None:
 # =========================================================
 # MAIN
 # =========================================================
-if _name_ == "_main_":
+if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
