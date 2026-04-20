@@ -9,12 +9,12 @@ import requests
 from flask import Flask
 
 # =========================
-# إعدادات عامة
+# ENV
 # =========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-SYMBOL = os.getenv("SYMBOL", "GC=F").strip()          # Gold futures proxy
+SYMBOL = os.getenv("SYMBOL", "GC=F").strip()
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "5m").strip()
 CHART_RANGE = os.getenv("CHART_RANGE", "5d").strip()
 
@@ -33,25 +33,17 @@ TP2_ATR_MULT = float(os.getenv("TP2_ATR_MULT", "2.5"))
 
 BREAKING_REFRESH_SECONDS = int(os.getenv("BREAKING_REFRESH_SECONDS", "180"))
 
-BREAKING_KEYWORDS_BULLISH = [
-    "trump", "tariff", "tariffs", "war", "iran", "middle east",
-    "missile", "attack", "sanctions", "geopolitical", "conflict",
-    "recession", "banking stress", "crisis", "default", "safe haven"
-]
-
-BREAKING_KEYWORDS_BEARISH = [
-    "ceasefire", "peace deal", "cooling tensions",
-    "risk-on", "trade deal", "de-escalation"
-]
-
+# =========================
+# LOGGING
+# =========================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger("gold-bot-pro")
+logger = logging.getLogger("gold-bot-clean")
 
 # =========================
-# حالة داخلية
+# GLOBAL STATE
 # =========================
 app = Flask(__name__)
 bot_started = False
@@ -63,19 +55,31 @@ last_breaking_bias = "neutral"
 last_breaking_label = "No fresh breaking news"
 seen_breaking_ids = set()
 
+BREAKING_KEYWORDS_BULLISH = [
+    "trump", "tariff", "tariffs", "war", "iran", "middle east",
+    "missile", "attack", "sanctions", "geopolitical", "conflict",
+    "recession", "banking stress", "crisis", "default", "safe haven"
+]
+
+BREAKING_KEYWORDS_BEARISH = [
+    "ceasefire", "peace deal", "cooling tensions",
+    "risk-on", "trade deal", "de-escalation"
+]
+
 # =========================
-# Flask endpoint لـ Render
+# FLASK FOR RENDER
 # =========================
 @app.route("/")
 def home():
     return "Gold bot is running"
 
 # =========================
-# Helpers
+# HELPERS
 # =========================
-def send_telegram(msg: str):
+def send_telegram(msg: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     requests.post(
         url,
@@ -91,16 +95,15 @@ def utc_now():
 
 def in_kill_zone() -> bool:
     """
-    جلسات قوية تقريبية بتوقيت UTC:
-    لندن: 07:00 - 11:59
-    نيويورك: 12:00 - 17:59
+    UTC:
+    London: 07:00-11:59
+    New York: 12:00-17:59
     """
-    now = utc_now()
-    h = now.hour
+    h = utc_now().hour
     return (7 <= h <= 11) or (12 <= h <= 17)
 
 # =========================
-# أخبار عاجلة
+# BREAKING NEWS
 # =========================
 def fetch_breaking_news_items():
     try:
@@ -144,8 +147,8 @@ def refresh_breaking_news_if_needed():
         return
 
     last_breaking_check_ts = time.time()
-
     items = fetch_breaking_news_items()
+
     if not items:
         last_breaking_bias = "neutral"
         last_breaking_label = "No fresh breaking news"
@@ -182,7 +185,7 @@ def refresh_breaking_news_if_needed():
     last_breaking_label = "No relevant breaking news"
 
 # =========================
-# بيانات السوق
+# MARKET DATA
 # =========================
 def fetch_chart_data(symbol: str, interval: str, range_: str):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -228,7 +231,7 @@ def fetch_chart_data(symbol: str, interval: str, range_: str):
     return bars
 
 # =========================
-# مؤشرات
+# INDICATORS
 # =========================
 def ema(values, length):
     if len(values) < length:
@@ -247,10 +250,11 @@ def ema(values, length):
 def rsi(values, length):
     if len(values) < length + 1:
         return []
-    out = [float("nan")] * len(values)
 
+    out = [float("nan")] * len(values)
     gains = []
     losses = []
+
     for i in range(1, length + 1):
         delta = values[i] - values[i - 1]
         gains.append(max(delta, 0))
@@ -265,6 +269,7 @@ def rsi(values, length):
         delta = values[i] - values[i - 1]
         gain = max(delta, 0)
         loss = max(-delta, 0)
+
         avg_gain = ((avg_gain * (length - 1)) + gain) / length
         avg_loss = ((avg_loss * (length - 1)) + loss) / length
         rs = avg_gain / avg_loss if avg_loss != 0 else math.inf
@@ -304,7 +309,7 @@ def lowest_prev(values, lookback, idx):
     return min(values[max(0, idx - lookback):idx])
 
 # =========================
-# منطق الإشارة
+# CHART LOGIC
 # =========================
 def analyze_chart(bars):
     closes = [b["close"] for b in bars]
@@ -472,7 +477,6 @@ def decide_signal(chart):
 
 def build_signal_message(signal_type, final_side, chart):
     title = f"💥 XAUUSD {final_side}" if signal_type == "STRONG" else f"📊 XAUUSD {final_side}"
-
     return (
         f"{title}\n\n"
         f"Type: {signal_type}\n"
@@ -491,12 +495,12 @@ def build_signal_message(signal_type, final_side, chart):
     )
 
 # =========================
-# لوب البوت
+# BOT LOOP
 # =========================
 def bot_loop():
     global last_signal_key
 
-    send_telegram("🔥 NEW VERSION V4 RUNNING")
+    send_telegram("✅ Gold Bot Pro started successfully.")
     logger.info("Bot started.")
 
     while True:
@@ -523,7 +527,14 @@ def bot_loop():
 
         except Exception as exc:
             logger.exception("Loop failed: %s", exc)
-            if "Not enough chart data" not in str(exc) and "Indicators not ready" not in str(exc):
+
+            ignored_errors = [
+                "Not enough chart data",
+                "Indicators not ready",
+                "Not enough bars after filtering",
+            ]
+
+            if not any(err in str(exc) for err in ignored_errors):
                 try:
                     send_telegram(f"⚠️ حصل خطأ في البوت:\n{exc}")
                 except Exception:
