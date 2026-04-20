@@ -496,7 +496,7 @@ def build_signal_message(signal_type, final_side, chart):
 def bot_loop():
     global last_signal_key
 
-    send_telegram("✅ Gold Bot Pro started successfully.")
+    send_telegram("🔥 NEW VERSION V4 RUNNING")
     logger.info("Bot started.")
 
     while True:
