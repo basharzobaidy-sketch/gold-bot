@@ -411,12 +411,12 @@ def analyze_chart(bars):
     entry_type = "none"
     strength = "WAIT"
 
-    if buy_score >= 7 and buy_score > sell_score and bull_trend and in_kill_zone():
+    if buy_score >= 6 and buy_score > sell_score and bull_trend and in_kill_zone():
         chart_bias = "bullish"
         entry_type = "Breakout" if long_break else ("Retest" if long_retest else "Trend")
         strength = "STRONG" if buy_score >= 8 else "MEDIUM"
 
-    if sell_score >= 7 and sell_score > buy_score and bear_trend and in_kill_zone():
+    if sell_score >= 6 and sell_score > buy_score and bear_trend and in_kill_zone():
         chart_bias = "bearish"
         entry_type = "Breakdown" if short_break else ("Retest" if short_retest else "Trend")
         strength = "STRONG" if sell_score >= 8 else "MEDIUM"
