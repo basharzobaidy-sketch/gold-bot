@@ -14,11 +14,12 @@ from flask import Flask
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-SYMBOL = os.getenv("SYMBOL", "GC=F").strip()
+SYMBOL = os.getenv("SYMBOL", "GC=F").strip()          # Gold futures proxy
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "5m").strip()
 CHART_RANGE = os.getenv("CHART_RANGE", "5d").strip()
 
 POLL_EVERY_SECONDS = int(os.getenv("POLL_EVERY_SECONDS", "180"))
+BREAKING_REFRESH_SECONDS = int(os.getenv("BREAKING_REFRESH_SECONDS", "180"))
 
 LOOKBACK = int(os.getenv("LOOKBACK", "8"))
 FAST_LEN = int(os.getenv("FAST_LEN", "20"))
@@ -31,8 +32,6 @@ SL_ATR_MULT = float(os.getenv("SL_ATR_MULT", "1.2"))
 TP1_ATR_MULT = float(os.getenv("TP1_ATR_MULT", "1.5"))
 TP2_ATR_MULT = float(os.getenv("TP2_ATR_MULT", "2.5"))
 
-BREAKING_REFRESH_SECONDS = int(os.getenv("BREAKING_REFRESH_SECONDS", "180"))
-
 # =========================
 # LOGGING
 # =========================
@@ -40,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger("gold-bot-clean")
+logger = logging.getLogger("gold-bot-v5")
 
 # =========================
 # GLOBAL STATE
@@ -71,7 +70,7 @@ BREAKING_KEYWORDS_BEARISH = [
 # =========================
 @app.route("/")
 def home():
-    return "Gold bot is running"
+    return "Gold Bot V5 is running"
 
 # =========================
 # HELPERS
@@ -500,7 +499,7 @@ def build_signal_message(signal_type, final_side, chart):
 def bot_loop():
     global last_signal_key
 
-    send_telegram("✅ Gold Bot Pro started successfully.")
+    send_telegram("✅ Gold Bot V5 started successfully.")
     logger.info("Bot started.")
 
     while True:
