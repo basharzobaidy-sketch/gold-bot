@@ -3,10 +3,10 @@ import time
 import math
 import threading
 import logging
-from datetime import datetime, timezone
 
 import requests
 from flask import Flask
+from deep_translator import GoogleTranslator
 
 # =========================
 # ENV
@@ -14,7 +14,7 @@ from flask import Flask
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-SYMBOL = os.getenv("SYMBOL", "GC=F").strip()
+SYMBOL = os.getenv("SYMBOL", "XAUUSD=X").strip()
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "5m").strip()
 CHART_RANGE = os.getenv("CHART_RANGE", "5d").strip()
 
@@ -39,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger("gold-bot-v5-full")
+logger = logging.getLogger("gold-bot-v6")
 
 # =========================
 # GLOBAL STATE
@@ -52,6 +52,7 @@ last_breaking_check_ts = 0.0
 last_breaking_sent_id = None
 last_breaking_bias = "neutral"
 last_breaking_label = "No fresh breaking news"
+last_breaking_label_ar = "لا يوجد خبر عاجل جديد"
 seen_breaking_ids = set()
 
 BREAKING_KEYWORDS_BULLISH = [
@@ -70,7 +71,7 @@ BREAKING_KEYWORDS_BEARISH = [
 # =========================
 @app.route("/")
 def home():
-    return "Gold Bot with signals is running"
+    return "Gold Bot V6 is running"
 
 # =========================
 # HELPERS
@@ -92,8 +93,14 @@ def send_telegram(msg: str) -> None:
 def round_price(v: float) -> float:
     return round(float(v), 2)
 
-def utc_now():
-    return datetime.now(timezone.utc)
+def translate_to_ar(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        return GoogleTranslator(source="auto", target="ar").translate(text)
+    except Exception as e:
+        logger.warning("Translation failed: %s", e)
+        return text
 
 # =========================
 # BREAKING NEWS
@@ -148,7 +155,7 @@ def classify_breaking_headline(title: str):
 
 def refresh_breaking_news_if_needed():
     global last_breaking_check_ts, last_breaking_sent_id
-    global last_breaking_bias, last_breaking_label
+    global last_breaking_bias, last_breaking_label, last_breaking_label_ar
 
     if time.time() - last_breaking_check_ts < BREAKING_REFRESH_SECONDS:
         return
@@ -159,6 +166,7 @@ def refresh_breaking_news_if_needed():
     if not items:
         last_breaking_bias = "neutral"
         last_breaking_label = "No fresh breaking news"
+        last_breaking_label_ar = "لا يوجد خبر عاجل جديد"
         return
 
     for item in items[:10]:
@@ -171,18 +179,21 @@ def refresh_breaking_news_if_needed():
             continue
 
         seen_breaking_ids.add(item_id)
-        bias, reason = classify_breaking_headline(title)
+        bias, reason_ar = classify_breaking_headline(title)
+        title_ar = translate_to_ar(title)
 
         if bias in {"bullish", "bearish"}:
             last_breaking_bias = bias
-            last_breaking_label = f"{title} | {reason}"
+            last_breaking_label = title
+            last_breaking_label_ar = title_ar
 
             if last_breaking_sent_id != item_id:
                 send_telegram(
                     f"🚨 BREAKING NEWS\n\n"
                     f"Headline: {title}\n"
+                    f"العنوان بالعربي: {title_ar}\n\n"
                     f"Impact on Gold: {bias.upper()}\n"
-                    f"Reason: {reason}\n\n"
+                    f"Reason: {reason_ar}\n\n"
                     f"Action: انتظر تأكيد الشارت قبل الدخول."
                 )
                 last_breaking_sent_id = item_id
@@ -190,6 +201,7 @@ def refresh_breaking_news_if_needed():
 
     last_breaking_bias = "neutral"
     last_breaking_label = "No relevant breaking news"
+    last_breaking_label_ar = "لا يوجد خبر عاجل مؤثر"
 
 # =========================
 # MARKET DATA
@@ -381,6 +393,7 @@ def analyze(bars):
 
     signal = "WAIT"
     score = max(score_buy, score_sell)
+    current_price = closes[i]
     entry = closes[i]
     atr_value = atr_vals[i]
 
@@ -403,6 +416,7 @@ def analyze(bars):
     return {
         "signal": signal,
         "score": score,
+        "current_price": round_price(current_price),
         "entry": round_price(entry),
         "sl": round_price(sl) if sl is not None else None,
         "tp1": round_price(tp1) if tp1 is not None else None,
@@ -417,7 +431,7 @@ def analyze(bars):
 def bot_loop():
     global last_signal_key
 
-    send_telegram("✅ Gold Bot with TP/SL started successfully.")
+    send_telegram("✅ Gold Bot Arabic + TP/SL started successfully.")
     logger.info("Bot started.")
 
     while True:
@@ -436,17 +450,22 @@ def bot_loop():
                 key = f"{signal}_{score}_{result['entry']}_{result['sl']}_{result['tp1']}_{result['tp2']}"
 
                 if key != last_signal_key:
+                    signal_ar = "شراء" if signal == "BUY" else "بيع"
+                    bias_ar = "داعم للذهب" if last_breaking_bias == "bullish" else ("ضاغط على الذهب" if last_breaking_bias == "bearish" else "محايد")
+
                     msg = (
-                        f"🔥 {signal} GOLD\n\n"
+                        f"🔥 {signal} GOLD ({signal_ar})\n\n"
                         f"Score: {score}\n"
+                        f"Current Price: {result['current_price']}\n"
                         f"Entry: {result['entry']}\n"
                         f"SL: {result['sl']}\n"
                         f"TP1: {result['tp1']}\n"
                         f"TP2: {result['tp2']}\n\n"
                         f"RSI: {result['rsi']}\n"
                         f"ATR: {result['atr']}\n"
-                        f"Breaking Bias: {last_breaking_bias.upper()}\n"
-                        f"Info: {last_breaking_label}"
+                        f"Breaking Bias: {last_breaking_bias.upper()} ({bias_ar})\n"
+                        f"Info EN: {last_breaking_label}\n"
+                        f"Info AR: {last_breaking_label_ar}"
                     )
                     send_telegram(msg)
                     last_signal_key = key
