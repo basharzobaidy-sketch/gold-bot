@@ -385,10 +385,10 @@ def analyze(bars):
             score_sell += 1
 
     # Final decision
-    if score_buy >= 4 and score_buy > score_sell:
+    if score_buy >= 3 and score_buy > score_sell:
         return "BUY", score_buy
 
-    if score_sell >= 4 and score_sell > score_buy:
+    if score_sell >= 3 and score_sell > score_buy:
         return "SELL", score_sell
 
     return "WAIT", max(score_buy, score_sell)
