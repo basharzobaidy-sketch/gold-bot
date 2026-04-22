@@ -1,4 +1,3 @@
 flask
 gunicorn
 requests>=2.31.0
-deep-translator
