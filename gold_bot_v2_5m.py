@@ -39,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger("gold-bot-v5-fixed")
+logger = logging.getLogger("gold-bot-v5-full")
 
 # =========================
 # GLOBAL STATE
@@ -70,7 +70,7 @@ BREAKING_KEYWORDS_BEARISH = [
 # =========================
 @app.route("/")
 def home():
-    return "Gold Bot V5 Fixed is running"
+    return "Gold Bot with signals is running"
 
 # =========================
 # HELPERS
@@ -344,13 +344,11 @@ def analyze(bars):
     score_buy = 0
     score_sell = 0
 
-    # RSI أوسع
     if 50 < rsi_vals[i] < 72:
         score_buy += 1
     if 28 < rsi_vals[i] < 50:
         score_sell += 1
 
-    # Trend
     bull_trend = ef[i] > es[i] and closes[i] > et[i]
     bear_trend = ef[i] < es[i] and closes[i] < et[i]
 
@@ -359,7 +357,6 @@ def analyze(bars):
     if bear_trend:
         score_sell += 2
 
-    # Breakout / Breakdown
     prev_high = max(highs[-LOOKBACK:])
     prev_low = min(lows[-LOOKBACK:])
 
@@ -368,7 +365,6 @@ def analyze(bars):
     if closes[i] < prev_low:
         score_sell += 2
 
-    # Strong candle أخف
     body = abs(closes[i] - opens[i])
     if body >= (atr_vals[i] * 0.6):
         if closes[i] > opens[i]:
@@ -376,7 +372,6 @@ def analyze(bars):
         elif closes[i] < opens[i]:
             score_sell += 1
 
-    # Volatility
     candle_range = highs[i] - lows[i]
     if candle_range >= (atr_vals[i] * 0.5):
         if bull_trend:
@@ -384,14 +379,37 @@ def analyze(bars):
         if bear_trend:
             score_sell += 1
 
-    # Final decision
+    signal = "WAIT"
+    score = max(score_buy, score_sell)
+    entry = closes[i]
+    atr_value = atr_vals[i]
+
+    sl = None
+    tp1 = None
+    tp2 = None
+
     if score_buy >= 3 and score_buy > score_sell:
-        return "BUY", score_buy
+        signal = "BUY"
+        sl = entry - (atr_value * SL_ATR_MULT)
+        tp1 = entry + (atr_value * TP1_ATR_MULT)
+        tp2 = entry + (atr_value * TP2_ATR_MULT)
 
-    if score_sell >= 3 and score_sell > score_buy:
-        return "SELL", score_sell
+    elif score_sell >= 3 and score_sell > score_buy:
+        signal = "SELL"
+        sl = entry + (atr_value * SL_ATR_MULT)
+        tp1 = entry - (atr_value * TP1_ATR_MULT)
+        tp2 = entry - (atr_value * TP2_ATR_MULT)
 
-    return "WAIT", max(score_buy, score_sell)
+    return {
+        "signal": signal,
+        "score": score,
+        "entry": round_price(entry),
+        "sl": round_price(sl) if sl is not None else None,
+        "tp1": round_price(tp1) if tp1 is not None else None,
+        "tp2": round_price(tp2) if tp2 is not None else None,
+        "rsi": round_price(rsi_vals[i]),
+        "atr": round_price(atr_value),
+    }
 
 # =========================
 # BOT LOOP
@@ -399,7 +417,7 @@ def analyze(bars):
 def bot_loop():
     global last_signal_key
 
-    send_telegram("✅ Gold Bot V5 fixed started successfully.")
+    send_telegram("✅ Gold Bot with TP/SL started successfully.")
     logger.info("Bot started.")
 
     while True:
@@ -407,17 +425,26 @@ def bot_loop():
             refresh_breaking_news_if_needed()
 
             bars = fetch_data()
-            signal, score = analyze(bars)
+            result = analyze(bars)
+
+            signal = result["signal"]
+            score = result["score"]
 
             logger.info("Signal=%s | Score=%s | BreakingNews=%s", signal, score, last_breaking_bias)
 
             if signal != "WAIT":
-                key = f"{signal}_{score}"
+                key = f"{signal}_{score}_{result['entry']}_{result['sl']}_{result['tp1']}_{result['tp2']}"
 
                 if key != last_signal_key:
                     msg = (
-                        f"🔥 {signal} GOLD\n"
+                        f"🔥 {signal} GOLD\n\n"
                         f"Score: {score}\n"
+                        f"Entry: {result['entry']}\n"
+                        f"SL: {result['sl']}\n"
+                        f"TP1: {result['tp1']}\n"
+                        f"TP2: {result['tp2']}\n\n"
+                        f"RSI: {result['rsi']}\n"
+                        f"ATR: {result['atr']}\n"
                         f"Breaking Bias: {last_breaking_bias.upper()}\n"
                         f"Info: {last_breaking_label}"
                     )
