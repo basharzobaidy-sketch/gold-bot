@@ -1,77 +1,25 @@
 import os
-import time
-import math
-import threading
 import logging
-
+from flask import Flask, request, jsonify
 import requests
-from flask import Flask
-from deep_translator import GoogleTranslator
 
 # =========================
 # ENV
 # =========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-SYMBOL = os.getenv("SYMBOL", "XAUUSD=X").strip()
-CHART_INTERVAL = os.getenv("CHART_INTERVAL", "5m").strip()
-CHART_RANGE = os.getenv("CHART_RANGE", "5d").strip()
-
-POLL_EVERY_SECONDS = int(os.getenv("POLL_EVERY_SECONDS", "120"))
-BREAKING_REFRESH_SECONDS = int(os.getenv("BREAKING_REFRESH_SECONDS", "180"))
-
-LOOKBACK = int(os.getenv("LOOKBACK", "8"))
-FAST_LEN = int(os.getenv("FAST_LEN", "20"))
-SLOW_LEN = int(os.getenv("SLOW_LEN", "50"))
-TREND_LEN = int(os.getenv("TREND_LEN", "100"))
-RSI_LEN = int(os.getenv("RSI_LEN", "14"))
-ATR_LEN = int(os.getenv("ATR_LEN", "14"))
-
-SL_ATR_MULT = float(os.getenv("SL_ATR_MULT", "1.2"))
-TP1_ATR_MULT = float(os.getenv("TP1_ATR_MULT", "1.5"))
-TP2_ATR_MULT = float(os.getenv("TP2_ATR_MULT", "2.5"))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me").strip()
 
 # =========================
-# LOGGING
+# APP
 # =========================
+app = Flask(__name__)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger("gold-bot-v6")
-
-# =========================
-# GLOBAL STATE
-# =========================
-app = Flask(__name__)
-bot_started = False
-
-last_signal_key = None
-last_breaking_check_ts = 0.0
-last_breaking_sent_id = None
-last_breaking_bias = "neutral"
-last_breaking_label = "No fresh breaking news"
-last_breaking_label_ar = "لا يوجد خبر عاجل جديد"
-seen_breaking_ids = set()
-
-BREAKING_KEYWORDS_BULLISH = [
-    "trump", "tariff", "tariffs", "war", "iran", "middle east",
-    "missile", "attack", "sanctions", "geopolitical", "conflict",
-    "recession", "banking stress", "crisis", "default", "safe haven"
-]
-
-BREAKING_KEYWORDS_BEARISH = [
-    "ceasefire", "peace deal", "cooling tensions",
-    "risk-on", "trade deal", "de-escalation"
-]
-
-# =========================
-# FLASK FOR RENDER
-# =========================
-@app.route("/")
-def home():
-    return "Gold Bot V6 is running"
+logger = logging.getLogger("gocharting-webhook-bot")
 
 # =========================
 # HELPERS
@@ -80,420 +28,86 @@ def send_telegram(msg: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(
-            url,
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
-            timeout=20
-        )
-    except Exception as e:
-        logger.warning("Telegram send failed: %s", e)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(
+        url,
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
+        timeout=20
+    )
 
-def round_price(v: float) -> float:
-    return round(float(v), 2)
+def parse_plain_text_payload(text: str) -> dict:
+    """
+    Expected plain text format from GoCharting alert message:
 
-def translate_to_ar(text: str) -> str:
-    if not text:
-        return ""
-    try:
-        return GoogleTranslator(source="auto", target="ar").translate(text)
-    except Exception as e:
-        logger.warning("Translation failed: %s", e)
-        return text
+    secret=YOUR_SECRET
+    signal=BUY
+    symbol=XAUUSD
+    timeframe=5m
+    price=3365.40
+    sl=3358.20
+    tp1=3373.10
+    tp2=3380.50
+    reason=Breakout retest
 
-# =========================
-# BREAKING NEWS
-# =========================
-def fetch_breaking_news_items():
-    try:
-        resp = requests.get(
-            "https://query1.finance.yahoo.com/v1/finance/search",
-            params={"q": "gold market"},
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-
-        if resp.status_code != 200:
-            logger.warning("Breaking news HTTP error: %s", resp.status_code)
-            return []
-
-        if not resp.text.strip():
-            logger.warning("Breaking news empty response")
-            return []
-
-        try:
-            data = resp.json()
-        except Exception as e:
-            logger.warning("Breaking news JSON error: %s", e)
-            return []
-
-        return data.get("news", []) or []
-
-    except Exception as e:
-        logger.warning("Breaking news request failed: %s", e)
-        return []
-
-def classify_breaking_headline(title: str):
-    t = title.lower()
-
-    for word in BREAKING_KEYWORDS_BULLISH:
-        if word in t:
-            return "bullish", f"عنوان عاجل داعم للذهب بسبب: {word}"
-
-    for word in BREAKING_KEYWORDS_BEARISH:
-        if word in t:
-            return "bearish", f"عنوان عاجل ضاغط على الذهب بسبب: {word}"
-
-    if "gold rises" in t or "gold jumps" in t or "safe haven" in t:
-        return "bullish", "الخبر يشير مباشرة إلى دعم الذهب"
-
-    if "gold falls" in t or "gold drops" in t:
-        return "bearish", "الخبر يشير مباشرة إلى ضغط على الذهب"
-
-    return "neutral", "خبر عاجل غير محسوم"
-
-def refresh_breaking_news_if_needed():
-    global last_breaking_check_ts, last_breaking_sent_id
-    global last_breaking_bias, last_breaking_label, last_breaking_label_ar
-
-    if time.time() - last_breaking_check_ts < BREAKING_REFRESH_SECONDS:
-        return
-
-    last_breaking_check_ts = time.time()
-    items = fetch_breaking_news_items()
-
-    if not items:
-        last_breaking_bias = "neutral"
-        last_breaking_label = "No fresh breaking news"
-        last_breaking_label_ar = "لا يوجد خبر عاجل جديد"
-        return
-
-    for item in items[:10]:
-        title = (item.get("title") or "").strip()
-        if not title:
+    """
+    data = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
             continue
+        k, v = line.split("=", 1)
+        data[k.strip().lower()] = v.strip()
+    return data
 
-        item_id = item.get("uuid") or item.get("link") or title
-        if item_id in seen_breaking_ids:
-            continue
+def build_message(data: dict) -> str:
+    signal = data.get("signal", "UNKNOWN").upper()
+    symbol = data.get("symbol", "XAUUSD")
+    timeframe = data.get("timeframe", "")
+    price = data.get("price", "-")
+    sl = data.get("sl", "-")
+    tp1 = data.get("tp1", "-")
+    tp2 = data.get("tp2", "-")
+    reason = data.get("reason", "-")
 
-        seen_breaking_ids.add(item_id)
-        bias, reason_ar = classify_breaking_headline(title)
-        title_ar = translate_to_ar(title)
+    signal_ar = "شراء" if signal == "BUY" else ("بيع" if signal == "SELL" else "إشارة")
 
-        if bias in {"bullish", "bearish"}:
-            last_breaking_bias = bias
-            last_breaking_label = title
-            last_breaking_label_ar = title_ar
-
-            if last_breaking_sent_id != item_id:
-                send_telegram(
-                    f"🚨 BREAKING NEWS\n\n"
-                    f"Headline: {title}\n"
-                    f"العنوان بالعربي: {title_ar}\n\n"
-                    f"Impact on Gold: {bias.upper()}\n"
-                    f"Reason: {reason_ar}\n\n"
-                    f"Action: انتظر تأكيد الشارت قبل الدخول."
-                )
-                last_breaking_sent_id = item_id
-            return
-
-    last_breaking_bias = "neutral"
-    last_breaking_label = "No relevant breaking news"
-    last_breaking_label_ar = "لا يوجد خبر عاجل مؤثر"
+    return (
+        f"🔥 {signal} {symbol} ({signal_ar})\n\n"
+        f"Timeframe: {timeframe}\n"
+        f"Current Price: {price}\n"
+        f"Entry: {price}\n"
+        f"SL: {sl}\n"
+        f"TP1: {tp1}\n"
+        f"TP2: {tp2}\n\n"
+        f"Reason: {reason}"
+    )
 
 # =========================
-# MARKET DATA
+# ROUTES
 # =========================
-def fetch_data():
+@app.route("/")
+def home():
+    return "GoCharting webhook bot is running"
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}"
-        r = requests.get(
-            url,
-            params={"interval": CHART_INTERVAL, "range": CHART_RANGE},
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
+        raw = request.get_data(as_text=True) or ""
+        logger.info("Received webhook raw payload: %s", raw)
 
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code} from Yahoo chart API")
+        data = parse_plain_text_payload(raw)
 
-        if not r.text.strip():
-            raise RuntimeError("Empty response from Yahoo chart API")
+        if not data:
+            return jsonify({"ok": False, "error": "empty or invalid payload"}), 400
 
-        try:
-            payload = r.json()
-        except Exception as e:
-            raise RuntimeError(f"Invalid JSON from Yahoo chart API: {e}")
+        if data.get("secret") != WEBHOOK_SECRET:
+            return jsonify({"ok": False, "error": "invalid secret"}), 403
 
-        chart = payload.get("chart", {})
-        result = chart.get("result")
+        msg = build_message(data)
+        send_telegram(msg)
 
-        if not result:
-            raise RuntimeError("No chart result returned")
+        return jsonify({"ok": True}), 200
 
-        data = result[0]
-        quote = data["indicators"]["quote"][0]
-
-        closes = quote.get("close", [])
-        highs = quote.get("high", [])
-        lows = quote.get("low", [])
-        opens = quote.get("open", [])
-
-        bars = []
-        for i in range(len(closes)):
-            if None in (closes[i], highs[i], lows[i], opens[i]):
-                continue
-            bars.append({
-                "close": float(closes[i]),
-                "high": float(highs[i]),
-                "low": float(lows[i]),
-                "open": float(opens[i]),
-            })
-
-        min_needed = max(TREND_LEN + 5, ATR_LEN + 5, RSI_LEN + 5, LOOKBACK + 5)
-        if len(bars) < min_needed:
-            raise RuntimeError("Not enough chart data")
-
-        return bars
-
-    except Exception as e:
-        raise RuntimeError(f"fetch_data failed: {e}")
-
-# =========================
-# INDICATORS
-# =========================
-def ema(data, length):
-    if len(data) < length:
-        return []
-
-    k = 2 / (length + 1)
-    ema_vals = [None] * (length - 1)
-    sma = sum(data[:length]) / length
-    ema_vals.append(sma)
-
-    for price in data[length:]:
-        ema_vals.append(price * k + ema_vals[-1] * (1 - k))
-
-    return ema_vals
-
-def rsi(data, length=14):
-    if len(data) < length + 1:
-        return []
-
-    gains, losses = [], []
-    for i in range(1, length + 1):
-        diff = data[i] - data[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-
-    avg_gain = sum(gains) / length
-    avg_loss = sum(losses) / length
-
-    rsis = [None] * length
-    rs = avg_gain / avg_loss if avg_loss != 0 else math.inf
-    rsis.append(100 - (100 / (1 + rs)))
-
-    for i in range(length + 1, len(data)):
-        diff = data[i] - data[i - 1]
-        gain = max(diff, 0)
-        loss = max(-diff, 0)
-
-        avg_gain = (avg_gain * (length - 1) + gain) / length
-        avg_loss = (avg_loss * (length - 1) + loss) / length
-
-        rs = avg_gain / avg_loss if avg_loss != 0 else math.inf
-        rsis.append(100 - (100 / (1 + rs)))
-
-    return rsis
-
-def atr(highs, lows, closes, length=14):
-    if len(closes) < length + 1:
-        return []
-
-    trs = [None]
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
-        )
-        trs.append(tr)
-
-    atr_vals = [None] * len(closes)
-    first_atr = sum(trs[1:length + 1]) / length
-    atr_vals[length] = first_atr
-
-    prev = first_atr
-    for i in range(length + 1, len(closes)):
-        curr = ((prev * (length - 1)) + trs[i]) / length
-        atr_vals[i] = curr
-        prev = curr
-
-    return atr_vals
-
-# =========================
-# ANALYSIS
-# =========================
-def analyze(bars):
-    closes = [b["close"] for b in bars]
-    highs = [b["high"] for b in bars]
-    lows = [b["low"] for b in bars]
-    opens = [b["open"] for b in bars]
-
-    ef = ema(closes, FAST_LEN)
-    es = ema(closes, SLOW_LEN)
-    et = ema(closes, TREND_LEN)
-    rsi_vals = rsi(closes, RSI_LEN)
-    atr_vals = atr(highs, lows, closes, ATR_LEN)
-
-    i = len(closes) - 1
-
-    if any(x is None for x in [ef[i], es[i], et[i], rsi_vals[i], atr_vals[i]]):
-        raise RuntimeError("Indicators not ready")
-
-    score_buy = 0
-    score_sell = 0
-
-    if 50 < rsi_vals[i] < 72:
-        score_buy += 1
-    if 28 < rsi_vals[i] < 50:
-        score_sell += 1
-
-    bull_trend = ef[i] > es[i] and closes[i] > et[i]
-    bear_trend = ef[i] < es[i] and closes[i] < et[i]
-
-    if bull_trend:
-        score_buy += 2
-    if bear_trend:
-        score_sell += 2
-
-    prev_high = max(highs[-LOOKBACK:])
-    prev_low = min(lows[-LOOKBACK:])
-
-    if closes[i] > prev_high:
-        score_buy += 2
-    if closes[i] < prev_low:
-        score_sell += 2
-
-    body = abs(closes[i] - opens[i])
-    if body >= (atr_vals[i] * 0.6):
-        if closes[i] > opens[i]:
-            score_buy += 1
-        elif closes[i] < opens[i]:
-            score_sell += 1
-
-    candle_range = highs[i] - lows[i]
-    if candle_range >= (atr_vals[i] * 0.5):
-        if bull_trend:
-            score_buy += 1
-        if bear_trend:
-            score_sell += 1
-
-    signal = "WAIT"
-    score = max(score_buy, score_sell)
-    current_price = closes[i]
-    entry = closes[i]
-    atr_value = atr_vals[i]
-
-    sl = None
-    tp1 = None
-    tp2 = None
-
-    if score_buy >= 3 and score_buy > score_sell:
-        signal = "BUY"
-        sl = entry - (atr_value * SL_ATR_MULT)
-        tp1 = entry + (atr_value * TP1_ATR_MULT)
-        tp2 = entry + (atr_value * TP2_ATR_MULT)
-
-    elif score_sell >= 3 and score_sell > score_buy:
-        signal = "SELL"
-        sl = entry + (atr_value * SL_ATR_MULT)
-        tp1 = entry - (atr_value * TP1_ATR_MULT)
-        tp2 = entry - (atr_value * TP2_ATR_MULT)
-
-    return {
-        "signal": signal,
-        "score": score,
-        "current_price": round_price(current_price),
-        "entry": round_price(entry),
-        "sl": round_price(sl) if sl is not None else None,
-        "tp1": round_price(tp1) if tp1 is not None else None,
-        "tp2": round_price(tp2) if tp2 is not None else None,
-        "rsi": round_price(rsi_vals[i]),
-        "atr": round_price(atr_value),
-    }
-
-# =========================
-# BOT LOOP
-# =========================
-def bot_loop():
-    global last_signal_key
-
-    send_telegram("✅ Gold Bot Arabic + TP/SL started successfully.")
-    logger.info("Bot started.")
-
-    while True:
-        try:
-            refresh_breaking_news_if_needed()
-
-            bars = fetch_data()
-            result = analyze(bars)
-
-            signal = result["signal"]
-            score = result["score"]
-
-            logger.info("Signal=%s | Score=%s | BreakingNews=%s", signal, score, last_breaking_bias)
-
-            if signal != "WAIT":
-                key = f"{signal}_{score}_{result['entry']}_{result['sl']}_{result['tp1']}_{result['tp2']}"
-
-                if key != last_signal_key:
-                    signal_ar = "شراء" if signal == "BUY" else "بيع"
-                    bias_ar = "داعم للذهب" if last_breaking_bias == "bullish" else ("ضاغط على الذهب" if last_breaking_bias == "bearish" else "محايد")
-
-                    msg = (
-                        f"🔥 {signal} GOLD ({signal_ar})\n\n"
-                        f"Score: {score}\n"
-                        f"Current Price: {result['current_price']}\n"
-                        f"Entry: {result['entry']}\n"
-                        f"SL: {result['sl']}\n"
-                        f"TP1: {result['tp1']}\n"
-                        f"TP2: {result['tp2']}\n\n"
-                        f"RSI: {result['rsi']}\n"
-                        f"ATR: {result['atr']}\n"
-                        f"Breaking Bias: {last_breaking_bias.upper()} ({bias_ar})\n"
-                        f"Info EN: {last_breaking_label}\n"
-                        f"Info AR: {last_breaking_label_ar}"
-                    )
-                    send_telegram(msg)
-                    last_signal_key = key
-
-        except Exception as exc:
-            logger.exception("Loop failed: %s", exc)
-
-            ignored_errors = [
-                "Not enough chart data",
-                "Indicators not ready",
-                "Not enough bars after filtering",
-                "Empty response from Yahoo chart API",
-                "Invalid JSON from Yahoo chart API",
-                "No chart result returned",
-            ]
-
-            if not any(err in str(exc) for err in ignored_errors):
-                try:
-                    send_telegram(f"⚠️ حصل خطأ في البوت:\n{exc}")
-                except Exception:
-                    pass
-
-        time.sleep(POLL_EVERY_SECONDS)
-
-def start_bot_once():
-    global bot_started
-    if not bot_started:
-        bot_started = True
-        threading.Thread(target=bot_loop, daemon=True).start()
-
-start_bot_once()
+    except Exception as exc:
+        logger.exception("Webhook failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
