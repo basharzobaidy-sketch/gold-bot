@@ -44,11 +44,21 @@ def home():
     return "Nahhas Email + News Bot is running"
 
 
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+
 def send_telegram(msg: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_BOT_TOKEN:
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=20)
+
+    # إرسال للخاص
+    if TELEGRAM_CHAT_ID:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=20)
+
+    # إرسال للجروب
+    if TELEGRAM_GROUP_ID:
+        requests.post(url, json={"chat_id": TELEGRAM_GROUP_ID, "text": msg}, timeout=20)
 
 
 def extract_body(msg):
