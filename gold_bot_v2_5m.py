@@ -244,4 +244,5 @@ if __name__ == "__main__":
     bot_loop()
 
 
-start_bot_once()
+if __name__ == "__main__":
+    bot_loop()
