@@ -240,5 +240,10 @@ def bot_loop():
         time.sleep(EMAIL_POLL_SECONDS)
 
 
-if __name__ == "__main__":
-    bot_loop()
+def start_bot_once():
+    global bot_started
+    if not bot_started:
+        bot_started = True
+        threading.Thread(target=bot_loop, daemon=True).start()
+
+start_bot_once()
