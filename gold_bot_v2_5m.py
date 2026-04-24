@@ -242,7 +242,3 @@ def bot_loop():
 
 if __name__ == "__main__":
     bot_loop()
-
-
-if __name__ == "__main__":
-    bot_loop()
