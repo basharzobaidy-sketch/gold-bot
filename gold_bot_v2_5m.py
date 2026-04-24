@@ -97,7 +97,7 @@ def build_signal_message(data):
     lot = data.get("lot", "-")
     rating = data.get("rating", "-")
     typ = data.get("type", "-")
-    reason = data.get("reason", "-")
+    reason = data.get("reason", "-").replace("</p>", "").strip()
 
     signal_ar = "شراء" if signal == "BUY" else "بيع" if signal == "SELL" else "إشارة"
 
