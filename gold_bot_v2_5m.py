@@ -7,15 +7,20 @@ import threading
 import requests
 from flask import Flask
 
+#=========================
+# ENV
+#=========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()      # الخاص
+TELEGRAM_GROUP_ID  = os.getenv("TELEGRAM_GROUP_ID", "").strip()     # الجروب
 
 GMAIL_USER = os.getenv("GMAIL_USER", "").strip()
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
-EMAIL_POLL_SECONDS = int(os.getenv("EMAIL_POLL_SECONDS", "30"))
-SIGNAL_SECRET = os.getenv("WEBHOOK_SECRET", "mygold123secret").strip()
 
+EMAIL_POLL_SECONDS = int(os.getenv("EMAIL_POLL_SECONDS", "30"))
 NEWS_REFRESH_SECONDS = int(os.getenv("NEWS_REFRESH_SECONDS", "180"))
+
+SIGNAL_SECRET = os.getenv("WEBHOOK_SECRET", "mygold123secret").strip()
 
 app = Flask(__name__)
 bot_started = False
@@ -24,129 +29,111 @@ seen_email_ids = set()
 seen_news_ids = set()
 last_news_check = 0
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("nahhas-email-news-bot")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("nahhas-bot")
 
-BREAKING_KEYWORDS_BULLISH = [
-    "trump", "tariff", "tariffs", "war", "iran", "middle east",
-    "missile", "attack", "sanctions", "geopolitical", "conflict",
-    "recession", "banking stress", "crisis", "default", "safe haven"
-]
-
-BREAKING_KEYWORDS_BEARISH = [
-    "ceasefire", "peace deal", "cooling tensions",
-    "risk-on", "trade deal", "de-escalation"
-]
-
-
-@app.route("/")
-def home():
-    return "Nahhas Email + News Bot is running"
-
-
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "").strip()
-
-def send_telegram(msg: str):
-    if not TELEGRAM_BOT_TOKEN:
+#=========================
+# TELEGRAM SENDERS
+#=========================
+def send_private(msg):
+    if not TELEGRAM_CHAT_ID:
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=20)
 
-    # إرسال للخاص
-    if TELEGRAM_CHAT_ID:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=20)
+def send_group(msg):
+    if not TELEGRAM_GROUP_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": TELEGRAM_GROUP_ID, "text": msg}, timeout=20)
 
-    # إرسال للجروب
-    if TELEGRAM_GROUP_ID:
-        requests.post(url, json={"chat_id": TELEGRAM_GROUP_ID, "text": msg}, timeout=20)
-
-
+#=========================
+# PARSE EMAIL
+#=========================
 def extract_body(msg):
     if msg.is_multipart():
-        parts = []
         for part in msg.walk():
-            ctype = part.get_content_type()
-            disp = str(part.get("Content-Disposition", ""))
-            if ctype == "text/plain" and "attachment" not in disp:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    parts.append(payload.decode(errors="ignore"))
-        return "\n".join(parts)
+            if part.get_content_type() == "text/plain":
+                return part.get_payload(decode=True).decode(errors="ignore")
+    return msg.get_payload(decode=True).decode(errors="ignore")
 
-    payload = msg.get_payload(decode=True)
-    return payload.decode(errors="ignore") if payload else ""
-
-
-def parse_signal(text: str):
+def parse_signal(text):
     if "NAHHAS_SIGNAL" not in text:
         return None
 
     data = {}
     for line in text.splitlines():
-        line = line.strip()
-        if not line or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        data[k.strip().lower()] = v.strip()
+        if "=" in line:
+            k, v = line.split("=", 1)
+            data[k.strip().lower()] = v.strip()
 
     if data.get("secret") != SIGNAL_SECRET:
         return None
 
     return data
 
-
-def build_signal_message(data):
-    signal = data.get("signal", "UNKNOWN").upper()
-    symbol = data.get("symbol", "XAUUSD")
-    timeframe = data.get("timeframe", "-")
-    price = data.get("price", "-")
-    sl = data.get("sl", "-")
-    tp1 = data.get("tp1", "-")
-    tp2 = data.get("tp2", "-")
-    tp3 = data.get("tp3", "-")
-    lot = data.get("lot", "-")
-    rating = data.get("rating", "-")
-    typ = data.get("type", "-")
-    reason = data.get("reason", "-").replace("</p>", "").strip()
-
-    signal_ar = "شراء" if signal == "BUY" else "بيع" if signal == "SELL" else "إشارة"
-
+#=========================
+# BUILD MESSAGE
+#=========================
+def build_signal_message(d):
     return (
-        f"🔥 {signal} {symbol} ({signal_ar})\n\n"
-        f"Type: {typ}\n"
-        f"Rating: {rating}\n"
-        f"Timeframe: {timeframe}\n"
-        f"Entry: {price}\n"
-        f"SL: {sl}\n"
-        f"TP1: {tp1}\n"
-        f"TP2: {tp2}\n"
-        f"TP3: {tp3}\n"
-        f"Lot: {lot}\n\n"
-        f"Reason: {reason}"
+        f"🔥 {d.get('signal')} {d.get('symbol')}\n\n"
+        f"Type: {d.get('type')}\n"
+        f"Timeframe: {d.get('timeframe')}\n"
+        f"Entry: {d.get('price')}\n"
+        f"SL: {d.get('sl')}\n"
+        f"TP1: {d.get('tp1')}\n"
+        f"TP2: {d.get('tp2')}\n"
+        f"TP3: {d.get('tp3')}\n\n"
+        f"Reason: {d.get('reason')}"
     )
 
+#=========================
+# EMAIL CHECK
+#=========================
+def check_email_once():
+    mail = imaplib.IMAP4_SSL("imap.gmail.com")
+    mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+    mail.select("inbox")
 
-def classify_news(title: str):
-    t = title.lower()
+    status, data = mail.search(None, '(UNSEEN FROM "noreply@tradingview.com")')
+    if status != "OK":
+        mail.logout()
+        return
 
-    for word in BREAKING_KEYWORDS_BULLISH:
-        if word in t:
-            return "BULLISH", f"خبر داعم للذهب بسبب: {word}"
+    for num in data[0].split():
+        if num in seen_email_ids:
+            continue
 
-    for word in BREAKING_KEYWORDS_BEARISH:
-        if word in t:
-            return "BEARISH", f"خبر ضاغط على الذهب بسبب: {word}"
+        _, msg_data = mail.fetch(num, "(RFC822)")
+        msg = email.message_from_bytes(msg_data[0][1])
 
-    if "gold rises" in t or "gold jumps" in t or "safe haven" in t:
-        return "BULLISH", "الخبر يشير إلى دعم الذهب"
+        body = extract_body(msg)
+        signal = parse_signal(body)
 
-    if "gold falls" in t or "gold drops" in t:
-        return "BEARISH", "الخبر يشير إلى ضغط على الذهب"
+        if signal:
+            message = build_signal_message(signal)
 
-    return "NEUTRAL", "خبر غير محسوم"
+            #=========================
+            # FILTER LOGIC 🔥
+            #=========================
+            signal_type = signal.get("type", "").upper()
 
+            if signal_type == "STRONG_ORDER":
+                send_private(message)
+                send_group(message)   # فقط STRONG يروح للجروب
+            else:
+                send_private(message)  # باقي الإشارات خاص فقط
 
-def check_breaking_news():
+        mail.store(num, "+FLAGS", "\\Seen")
+        seen_email_ids.add(num)
+
+    mail.logout()
+
+#=========================
+# NEWS (خاص فقط)
+#=========================
+def check_news():
     global last_news_check
 
     if time.time() - last_news_check < NEWS_REFRESH_SECONDS:
@@ -158,98 +145,46 @@ def check_breaking_news():
         r = requests.get(
             "https://query1.finance.yahoo.com/v1/finance/search",
             params={"q": "gold market"},
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"}
+            timeout=20
         )
 
-        if r.status_code != 200 or not r.text.strip():
+        if r.status_code != 200:
             return
 
-        data = r.json()
-        news = data.get("news", []) or []
+        news = r.json().get("news", [])
+        for item in news[:5]:
+            title = item.get("title", "")
 
-        for item in news[:10]:
-            title = (item.get("title") or "").strip()
-            if not title:
+            if title in seen_news_ids:
                 continue
 
-            item_id = item.get("uuid") or item.get("link") or title
-            if item_id in seen_news_ids:
-                continue
+            seen_news_ids.add(title)
 
-            seen_news_ids.add(item_id)
+            msg = f"🚨 NEWS\n\n{title}"
+            send_private(msg)   # 🔥 خبر للخاص فقط
+            break
 
-            bias, reason = classify_news(title)
+    except:
+        pass
 
-            if bias in ["BULLISH", "BEARISH"]:
-                send_telegram(
-                    f"🚨 BREAKING NEWS\n\n"
-                    f"Headline: {title}\n"
-                    f"Impact on Gold: {bias}\n"
-                    f"Reason: {reason}\n\n"
-                    f"Action: انتظر تأكيد الشارت قبل الدخول."
-                )
-                return
-
-    except Exception as exc:
-        logger.warning("News check failed: %s", exc)
-
-
-def check_email_once():
-    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
-        logger.warning("Missing Gmail credentials.")
-        return
-
-    mail = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-    mail.select("inbox")
-
-    status, data = mail.search(None, '(UNSEEN FROM "noreply@tradingview.com")')
-    if status != "OK":
-        mail.logout()
-        return
-
-    ids = data[0].split()
-
-    for msg_id in ids:
-        msg_id_str = msg_id.decode()
-
-        if msg_id_str in seen_email_ids:
-            continue
-
-        status, msg_data = mail.fetch(msg_id, "(RFC822)")
-        if status != "OK":
-            continue
-
-        raw_email = msg_data[0][1]
-        msg = email.message_from_bytes(raw_email)
-        body = extract_body(msg)
-
-        signal_data = parse_signal(body)
-
-        if signal_data:
-            send_telegram(build_signal_message(signal_data))
-            seen_email_ids.add(msg_id_str)
-
-        mail.store(msg_id, "+FLAGS", "\\Seen")
-
-    mail.logout()
-
-
+#=========================
+# LOOP
+#=========================
 def bot_loop():
-    send_telegram("✅ Nahhas Email + News Bot started successfully.")
-    logger.info("Bot started.")
+    send_private("✅ Bot Started")
 
     while True:
         try:
-            check_breaking_news()
             check_email_once()
-        except Exception as exc:
-            logger.exception("Main loop error: %s", exc)
+            check_news()
+        except Exception as e:
+            logger.error(e)
 
         time.sleep(EMAIL_POLL_SECONDS)
 
-
+#=========================
+# START
+#=========================
 def start_bot_once():
     global bot_started
     if not bot_started:
@@ -257,3 +192,7 @@ def start_bot_once():
         threading.Thread(target=bot_loop, daemon=True).start()
 
 start_bot_once()
+
+@app.route("/")
+def home():
+    return "Bot Running"
